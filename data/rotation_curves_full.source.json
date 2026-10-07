@@ -1,0 +1,19 @@
+{
+  "catalogue": "J/AJ/152/157/table2",
+  "citation": "Lelli, McGaugh & Schombert (2016), AJ 152, 157",
+  "columns": [
+    "Name",
+    "Dist",
+    "Rad",
+    "Vobs",
+    "e_Vobs",
+    "Vgas",
+    "Vdisk",
+    "Vbulge",
+    "SBdisk"
+  ],
+  "retrieved_utc": "2026-10-07T19:59:03.402259+00:00",
+  "rights": "retain CDS/VizieR and original catalogue terms; MIT code license does not replace them",
+  "sha256": "768b12d0480e4273fa8177bd6f6107b8710c69e5411a99da79ec9f75c014e8bb",
+  "url": "https://vizier.cds.unistra.fr/viz-bin/asu-tsv?-source=J%2FAJ%2F152%2F157%2Ftable2&-out.max=10000&-out=Name%2CDist%2CRad%2CVobs%2Ce_Vobs%2CVgas%2CVdisk%2CVbulge%2CSBdisk"
+}

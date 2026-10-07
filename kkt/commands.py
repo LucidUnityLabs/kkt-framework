@@ -17,7 +17,7 @@ from scipy.stats import chi2 as chi2_distribution
 
 from . import core as c
 from .data import load_sparc, sha256_file
-from .fitting import (Policy, bounded_minimum, fit_sample, minimum_2d,
+from .fitting import (Policy, bounded_minimum, feasible_ml_bounds, fit_sample, minimum_2d,
                       paired_delta, profile_intervals)
 from .statistics import evolution_fit, forecast_sample_size
 from .verification import Ledger, write_json
@@ -184,7 +184,7 @@ def dimensional_report(args):
 
 
 def _sample(args):
-    policy = Policy(args.objective, args.floor, args.ml_min, args.ml_max, args.bulge_ml_ratio)
+    policy = Policy(args.objective, args.floor, args.ml_min, args.ml_max, args.bulge_ml_ratio, args.ml_grid_points)
     galaxies, metadata = load_sparc(args.data, min_points=args.min_points,
                                     allow_disk_only=args.disk_only)
     metadata["policy"] = asdict(policy)
@@ -207,6 +207,55 @@ def _comparison(first, second, tie_threshold=.5):
             "delta_cost": float(np.sum(differences))}
 
 
+def _search_controls(args, *, galaxies=None, policy=None):
+    """Separate requested controls from searches completed by this command."""
+    requested = {
+        "policy": {"objective": args.objective, "fractional_floor": args.floor,
+                   "ml_min": args.ml_min, "ml_max": args.ml_max,
+                   "bulge_ml_ratio": args.bulge_ml_ratio, "ml_grid_points": args.ml_grid_points},
+        "alpha_bounds": list(args.alpha_bounds), "beta_bounds": list(args.beta_bounds),
+        "ml_grid_points": args.ml_grid_points, "ml_xatol": 1e-8,
+        "scalar_grid_points": args.scalar_grid_points, "scalar_xatol": 1e-8,
+        "bounded_maxiter": 1000,
+        "profile_grid_points": args.profile_grid_points,
+        "profile_root_xtol": 1e-10, "profile_root_rtol": 1e-12,
+        "joint_grid_points_per_axis": args.joint_grid_points,
+        "joint_refined_starts": args.joint_starts,
+        "joint_xtol": 1e-7, "joint_ftol": 1e-10, "joint_maxiter": 1000,
+    }
+    executed = {}
+    if galaxies is not None:
+        executed["galaxy_ml"] = {
+            "policy": asdict(policy), "grid_points": policy.ml_grid_points,
+            "xatol": 1e-8, "maxiter": 1000,
+            "feasible_domains": [{"name": g.name, "bounds": list(feasible_ml_bounds(g, policy))}
+                                 for g in galaxies],
+        }
+        scalar = {"grid_points": args.scalar_grid_points, "xatol": 1e-8, "maxiter": 1000}
+        if args.command == "sparc":
+            executed["mond_free_alpha"] = {**scalar, "alpha_bounds": list(args.alpha_bounds)}
+            executed["generalized_free_beta"] = {**scalar, "beta_bounds": list(args.beta_bounds),
+                                                 "fixed_alpha": 1.0}
+            executed["beta_profile_support"] = {
+                "beta_bounds": list(args.beta_bounds), "fixed_alpha": 1.0,
+                "grid_points": args.profile_grid_points, "probability": .95,
+                "root_xtol": 1e-10, "root_rtol": 1e-12,
+            }
+        elif args.command == "ds":
+            executed["generalized_joint"] = {
+                "alpha_bounds": list(args.alpha_bounds), "beta_bounds": list(args.beta_bounds),
+                "grid_points_per_axis": args.joint_grid_points,
+                "refined_starts": args.joint_starts,
+                "xtol": 1e-7, "ftol": 1e-10, "maxiter": 1000,
+            }
+            executed["beta1_free_alpha"] = {**scalar, "alpha_bounds": list(args.alpha_bounds),
+                                           "fixed_beta": 1.0}
+            executed["fixed_KK_evaluation"] = {"alpha": 1.0, "beta": 1.0}
+    return {**requested, "requested": requested, "executed": executed,
+            "execution_status": "completed" if galaxies is not None else "not recorded; command blocked",
+            "status": "declared search settings; convergence not certified"}
+
+
 def sparc_report(args):
     galaxies, metadata, policy = _sample(args)
     kk = fit_sample(galaxies, policy=policy)
@@ -217,9 +266,9 @@ def sparc_report(args):
     @lru_cache(maxsize=16384)
     def beta_profile(beta):
         return fit_sample(galaxies, policy=policy, model="generalized", beta=beta)["cost"]
-    free_a = bounded_minimum(mond_profile, args.alpha_bounds)
-    free_beta = bounded_minimum(beta_profile, args.beta_bounds)
-    support = profile_intervals(beta_profile, free_beta, args.beta_bounds)
+    free_a = bounded_minimum(mond_profile, args.alpha_bounds, grid_points=args.scalar_grid_points)
+    free_beta = bounded_minimum(beta_profile, args.beta_bounds, grid_points=args.scalar_grid_points)
+    support = profile_intervals(beta_profile, free_beta, args.beta_bounds, grid_points=args.profile_grid_points)
     if args.plot:
         plt = _plotter()
         fig, ax = plt.subplots()
@@ -236,6 +285,7 @@ def sparc_report(args):
         ax.legend()
         _save_figure(plt, fig, args.out/"figures"/"RAR_KK_vs_MOND.png")
     return {"status": "CONDITIONAL_FITS_NOT_CALIBRATED_INFERENCE", "input": metadata,
+            "search_controls": _search_controls(args, galaxies=galaxies, policy=policy),
             "test_A": _comparison(kk, mond), "kk": kk, "mond": mond,
             "test_B": {"alpha_fit": asdict(free_a), "a0": free_a.x*c.A0,
                        "conditional_H0": free_a.x*c.H0_KM_S_MPC,
@@ -253,15 +303,18 @@ def ds_report(args):
     def profile(beta, alpha):
         return fit_sample(galaxies, policy=policy, model="generalized", beta=beta,
                           a0=alpha*c.A0)["cost"]
-    best = minimum_2d(profile, args.beta_bounds, args.alpha_bounds)
+    best = minimum_2d(profile, args.beta_bounds, args.alpha_bounds,
+                      grid_points=args.joint_grid_points, starts=args.joint_starts)
     fixed = profile(1.0, 1.0)
-    beta_one = bounded_minimum(lambda a: profile(1.0, a), args.alpha_bounds)
+    beta_one = bounded_minimum(lambda a: profile(1.0, a), args.alpha_bounds,
+                               grid_points=args.scalar_grid_points)
     threshold = float(chi2_distribution.ppf(.95, 2))
     corrections = [{"mode": n, "radius_kpc": r,
                     "assumed_relative_propagator_correction":
                         -(4*math.pi**2*n*n-9/4)/6*(c.H0*r*c.KPC/c.C)**2}
                    for n in (1, 2, 3) for r in (10, 100, 1000)]
     return {"status": "PHENOMENOLOGICAL_SEARCH", "input": metadata,
+            "search_controls": _search_controls(args, galaxies=galaxies, policy=policy),
             "searched_minimum": best, "fixed_KK_cost": fixed,
             "fixed_KK_delta": fixed-best["cost"],
             "fixed_KK_inside_nominal_joint_support": fixed-best["cost"] <= threshold,
@@ -325,6 +378,7 @@ def morphology_report(args):
                ylim=(0, 1), ylabel="KK pairwise win fraction (delta cost > 0.5)")
         _save_figure(plt, fig, args.out/"figures"/"kk_rar_morphology.png")
     return {"status": "EXPLORATORY_STRATIFICATION", "input": metadata,
+            "search_controls": _search_controls(args, galaxies=galaxies, policy=policy),
             "classification": "median sampled SBdisk tertiles; not central surface brightness or morphology",
             "brightness_cuts": cuts.tolist(), "groups": groups, "bins": binned,
             "binning_reference": "fixed disk M/L=0.5 and declared bulge ratio; not a KK-optimized coordinate",
@@ -378,7 +432,7 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("command", choices=["verify", "solar", "redshift", "dimensional", "sparc", "ds", "morphology", "btfr"])
     parser.add_argument("--out", type=Path, default=ROOT/"build"/"results")
-    parser.add_argument("--data", type=Path, default=ROOT/"data"/"rotation_curves.tsv")
+    parser.add_argument("--data", type=Path, default=ROOT/"data"/"rotation_curves_full.tsv")
     parser.add_argument("--btfr-data", type=Path, default=ROOT/"data"/"btfr_observations.json")
     parser.add_argument("--plot", action="store_true")
     parser.add_argument("--require-all-claims", action="store_true")
@@ -391,7 +445,16 @@ def main(argv=None):
     parser.add_argument("--bulge-ml-ratio", type=float, default=1.4)
     parser.add_argument("--alpha-bounds", nargs=2, type=float, default=[.1, 3.])
     parser.add_argument("--beta-bounds", nargs=2, type=float, default=[.3, 3.])
+    parser.add_argument("--ml-grid-points", type=int, default=17)
+    parser.add_argument("--scalar-grid-points", type=int, default=33)
+    parser.add_argument("--profile-grid-points", type=int, default=161)
+    parser.add_argument("--joint-grid-points", type=int, default=11)
+    parser.add_argument("--joint-starts", type=int, default=5)
     args = parser.parse_args(argv)
+    if (min(args.ml_grid_points, args.scalar_grid_points, args.profile_grid_points) < 5
+            or args.joint_grid_points < 3
+            or not 1 <= args.joint_starts <= args.joint_grid_points**2):
+        parser.error("invalid search resolutions or joint-start count")
     handlers = {"verify": verification_report, "solar": solar_report, "redshift": redshift_report,
                 "dimensional": dimensional_report, "sparc": sparc_report, "ds": ds_report,
                 "morphology": morphology_report, "btfr": btfr_report}
@@ -402,6 +465,9 @@ def main(argv=None):
     result["schema_version"] = 1
     result["provenance"] = provenance()
     result["command"] = args.command
+    if args.command in {"sparc", "ds", "morphology"}:
+        if "search_controls" not in result:
+            result["search_controls"] = _search_controls(args)
     write_json(args.out/f"{args.command}.json", result)
     if args.command == "verify" and "counts" in result:
         print(json.dumps(result["counts"], sort_keys=True))

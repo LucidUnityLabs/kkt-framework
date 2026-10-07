@@ -357,3 +357,140 @@ def test_empty_verification_arrays_fail():
     ledger=Ledger(); ledger.close("empty",[],[],rtol=1e-12)
     assert ledger.report()["counts"]["FAIL"]==1
     assert ledger.exit_code()==1
+
+
+def test_complete_catalogue_matches_preserved_projection():
+    complete, full_meta = load_sparc(ROOT/"data"/"rotation_curves_full.tsv")
+    legacy, legacy_meta = load_sparc(ROOT/"data"/"rotation_curves.tsv", allow_disk_only=True)
+    assert full_meta["galaxies"] == legacy_meta["galaxies"] == 175
+    assert full_meta["points"] == legacy_meta["points"] == 3391
+    assert "gas+disk+bulge" in full_meta["baryonic_model"]
+    assert any(np.any(g.bulge_acceleration > 0) for g in complete)
+    for full, old in zip(complete, legacy, strict=True):
+        assert full.name == old.name
+        for field in ("radius_m", "velocity_m_s", "velocity_error_m_s",
+                      "gas_acceleration", "disk_acceleration", "sb_disk"):
+            np.testing.assert_array_equal(getattr(full, field), getattr(old, field))
+
+
+@pytest.mark.parametrize("target", [1e-4, 1-1e-4])
+def test_optimizer_refines_interior_minimum_inside_boundary_grid_cell(target):
+    result = bounded_minimum(lambda x: (x-target)**2, (0, 1))
+    assert result.x == pytest.approx(target, abs=1e-8)
+    assert result.cost < 1e-16
+    assert not result.boundary
+
+
+@pytest.mark.parametrize("scale", [1e-14, 1e-20])
+def test_small_nonconstant_objective_refines_despite_flat_diagnostic(scale):
+    target = .123456
+    result = bounded_minimum(lambda x: scale*(x-target)**2, (0, 1))
+    assert result.flat_on_grid
+    assert abs(result.x-target) < 1e-7
+    assert result.cost < scale*1e-14
+
+
+def test_constant_objective_has_no_identifiable_sampled_basin(monkeypatch):
+    import kkt.fitting as fitting
+    def unexpected(*args, **kwargs):
+        raise AssertionError("constant sampled objective must not invent a basin")
+    monkeypatch.setattr(fitting, "minimize_scalar", unexpected)
+    result = bounded_minimum(lambda x: 7., (0, 1))
+    assert result.flat_on_grid
+    assert result.cost == 7.
+    assert result.x == 0.
+    assert result.boundary
+
+
+def test_declared_search_controls_reach_catalogue_search_and_report(tmp_path, monkeypatch):
+    import kkt.commands as commands
+    policies = []
+    captured = {}
+    monkeypatch.setattr(commands, "load_sparc", lambda *a, **kw: ([], {"points": 0, "galaxies": 0}))
+    def sample(galaxies, *, policy, model, beta, a0):
+        policies.append(policy.ml_grid_points)
+        return {"cost": (beta-.8)**2+(a0/commands.c.A0-1.2)**2}
+    monkeypatch.setattr(commands, "fit_sample", sample)
+    monkeypatch.setattr(commands, "provenance", lambda: {})
+    monkeypatch.setattr(commands, "write_json", lambda path, value: captured.update(value))
+    assert commands.main(["ds", "--out", str(tmp_path), "--ml-grid-points", "19",
+                          "--scalar-grid-points", "7", "--profile-grid-points", "9",
+                          "--joint-grid-points", "3", "--joint-starts", "2"]) == 0
+    assert set(policies) == {19}
+    controls = captured["search_controls"]
+    assert controls["scalar_grid_points"] == 7
+    assert controls["profile_grid_points"] == 9
+    assert captured["searched_minimum"]["grid_points_per_axis"] == 3
+    assert captured["searched_minimum"]["refined_starts"] == 2
+    assert abs(captured["searched_minimum"]["beta"]-.8) < 1e-6
+
+
+@pytest.mark.parametrize("flag,value", [("--ml-grid-points", "4"),
+                                        ("--joint-starts", "0"),
+                                        ("--joint-grid-points", "2")])
+def test_cli_rejects_invalid_search_resolution(flag, value):
+    from kkt.commands import main
+    with pytest.raises(SystemExit) as exc:
+        main(["verify", flag, value])
+    assert exc.value.code == 2
+
+
+@pytest.mark.parametrize("command", ["sparc", "ds"])
+def test_custom_domains_and_executed_search_provenance(command, tmp_path, monkeypatch):
+    import kkt.commands as commands
+    galaxy = example_galaxy()
+    monkeypatch.setattr(commands, "load_sparc", lambda *a, **kw:
+                        ([galaxy], {"points": 3, "galaxies": 1}))
+    def sample(galaxies, *, policy, model="kk", beta=1., a0=c.A0):
+        return {"cost": (beta-.8)**2+(a0/c.A0-1.2)**2, "nominal_dof": 2,
+                "fits": [{"name": galaxy.name, "row_ids": list(galaxy.row_ids),
+                          "residuals": [0., 0., 0.]}]}
+    monkeypatch.setattr(commands, "fit_sample", sample)
+    monkeypatch.setattr(commands, "provenance", lambda: {})
+    assert commands.main([command, "--out", str(tmp_path),
+        "--alpha-bounds", ".61", "1.73", "--beta-bounds", ".42", "1.89",
+        "--objective", "acceleration", "--floor", ".07", "--ml-min", ".31",
+        "--ml-max", "4.2", "--bulge-ml-ratio", "1.6", "--ml-grid-points", "5",
+        "--scalar-grid-points", "5", "--profile-grid-points", "7",
+        "--joint-grid-points", "3", "--joint-starts", "1"]) == 0
+    result = json.loads((tmp_path/f"{command}.json").read_text())
+    controls = result["search_controls"]
+    requested, executed = controls["requested"], controls["executed"]
+    assert requested["alpha_bounds"] == [.61, 1.73]
+    assert requested["beta_bounds"] == [.42, 1.89]
+    assert requested["policy"] == result["input"]["policy"] == {
+        "objective": "acceleration", "fractional_floor": .07, "ml_min": .31,
+        "ml_max": 4.2, "bulge_ml_ratio": 1.6, "ml_grid_points": 5}
+    assert executed["galaxy_ml"]["policy"] == requested["policy"]
+    assert executed["galaxy_ml"]["feasible_domains"] == [{"name": "fixture", "bounds": [.31, 4.2]}]
+    assert executed["galaxy_ml"]["xatol"] == 1e-8
+    assert executed["galaxy_ml"]["maxiter"] == 1000
+    assert controls["execution_status"] == "completed"
+    if command == "sparc":
+        assert set(executed) == {"galaxy_ml", "mond_free_alpha", "generalized_free_beta", "beta_profile_support"}
+        assert executed["mond_free_alpha"]["alpha_bounds"] == [.61, 1.73]
+        assert executed["generalized_free_beta"]["beta_bounds"] == [.42, 1.89]
+        assert executed["beta_profile_support"]["beta_bounds"] == [.42, 1.89]
+        assert executed["beta_profile_support"]["root_xtol"] == 1e-10
+        assert executed["beta_profile_support"]["root_rtol"] == 1e-12
+    else:
+        assert set(executed) == {"galaxy_ml", "generalized_joint", "beta1_free_alpha", "fixed_KK_evaluation"}
+        assert executed["generalized_joint"]["alpha_bounds"] == [.61, 1.73]
+        assert executed["generalized_joint"]["beta_bounds"] == [.42, 1.89]
+        assert executed["generalized_joint"]["xtol"] == 1e-7
+        assert executed["generalized_joint"]["ftol"] == 1e-10
+        assert executed["beta1_free_alpha"]["alpha_bounds"] == [.61, 1.73]
+        assert requested["profile_grid_points"] == 7
+        assert "beta_profile_support" not in executed
+
+
+def test_blocked_search_does_not_claim_executed_controls(tmp_path, monkeypatch):
+    import kkt.commands as commands
+    def blocked(*a, **kw):
+        raise ValueError("tiny missing input")
+    monkeypatch.setattr(commands, "load_sparc", blocked)
+    monkeypatch.setattr(commands, "provenance", lambda: {})
+    assert commands.main(["ds", "--out", str(tmp_path)]) == 2
+    controls = json.loads((tmp_path/"ds.json").read_text())["search_controls"]
+    assert controls["executed"] == {}
+    assert controls["execution_status"] == "not recorded; command blocked"

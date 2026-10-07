@@ -15,11 +15,18 @@ The selected columns are Name, Dist, Rad, Vobs, e_Vobs, Vgas, Vdisk and SBdisk.
 SBdisk is surface brightness, not Vbulge. Keep signed gas contributions.
 
 The complete catalogue mass-model schema additionally supplies Vbulge and
-SBbulge. Restore the full selected velocity components before complete fits.
-Use `tools/acquire_sparc.py --output data/rotation_curves_full.tsv` as an explicit
-acquisition step, review the resulting source record and counts, and migrate the
-analysis input deliberately. The helper has not been network-tested in the audit.
-Preserve the original TSV under a legacy-data name before replacing its path.
+SBbulge. The current named-column input restores every velocity component
+needed for the declared gas+disk+bulge prescription. It is the default analysis
+input. The acquisition command used was
+`tools/acquire_sparc.py --output data/rotation_curves_full.tsv`; future
+reacquisitions must select a new path and review counts/source records before
+changing the manifest or default input. The helper was network-tested on 7 October 2026: 175 galaxies / 3391
+observations, named Vbulge column, units and schema validated. All 3391
+common-column records match the historical projection exactly.
+`rotation_curves_full.source.json` records the URL, actual SHA-256, retrieval
+time and attribution. The original projection is preserved unchanged.
+`inputs.full.lock.json` locks the complete and historical products separately.
+The original TSV remains at its historical path and is never silently replaced.
 Do not silently change the data file while retaining the old README statistics.
 
 Official schema:

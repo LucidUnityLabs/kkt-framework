@@ -44,6 +44,10 @@ def bounded_minimum(function, bounds, *, grid_points=33, xatol=1e-8):
 
     This is a searched minimum, not a mathematical global-optimality proof.
     Increase grid_points and compare results for difficult profiles.
+    flat_on_grid flags small sampled cost variation in objective units; it does
+    not suppress refinement of nonconstant sampled basins. Exactly equal sampled
+    values cannot identify hidden between-sample features; additive offsets can
+    erase differences in floating-point arithmetic.
     """
     lo, hi = map(float, bounds)
     if not (math.isfinite(lo) and math.isfinite(hi) and lo < hi
@@ -58,13 +62,24 @@ def bounded_minimum(function, bounds, *, grid_points=33, xatol=1e-8):
     values = np.array([evaluate(x) for x in grid])
     candidates = list(zip(grid, values, strict=True))
     flat = bool(np.ptp(values) <= 1e-12 * max(1.0, abs(float(values.min()))))
-    for i in range(1, len(grid)-1):
-        if values[i] <= values[i-1] and values[i] <= values[i+1] and not flat:
-            result = minimize_scalar(evaluate, bounds=(grid[i-1], grid[i+1]),
-                                     method="bounded", options={"xatol": xatol, "maxiter": 1000})
-            if not result.success:
-                raise RuntimeError(f"optimization failed: {result.message}")
-            candidates.append((float(result.x), evaluate(result.x)))
+    basins = []
+    # Flatness is a units-dependent diagnostic, not a refinement veto.
+    # An exactly constant sampled grid has no identifiable sampled basin.
+    if np.ptp(values) > 0:
+        # The lowest sampled endpoint can hide a minimum inside its edge cell.
+        if values[0] < values[1]:
+            basins.append((grid[0], grid[1]))
+        if values[-1] < values[-2]:
+            basins.append((grid[-2], grid[-1]))
+        basins.extend((grid[i-1], grid[i+1]) for i in range(1, len(grid)-1)
+                      if values[i] <= values[i-1] and values[i] <= values[i+1]
+                      and (values[i] < values[i-1] or values[i] < values[i+1]))
+    for basin in basins:
+        result = minimize_scalar(evaluate, bounds=basin,
+                                 method="bounded", options={"xatol": xatol, "maxiter": 1000})
+        if not result.success:
+            raise RuntimeError(f"optimization failed: {result.message}")
+        candidates.append((float(result.x), evaluate(result.x)))
     x, cost = min(candidates, key=lambda pair: pair[1])
     edge = min(abs(x-lo), abs(x-hi)) <= max(10*xatol, 1e-7*(hi-lo))
     return Minimum(float(x), float(cost), bool(edge), flat)
@@ -147,8 +162,8 @@ def profile_intervals(function, best: Minimum, bounds, *, probability=.95, grid_
     detected connected interval and marks domain-truncated endpoints. A grid
     can miss narrow features: require scan-density stability in release work.
     """
-    if not 0 < probability < 1:
-        raise ValueError("probability must be between zero and one")
+    if not 0 < probability < 1 or not isinstance(grid_points, int) or grid_points < 5:
+        raise ValueError("probability must be between zero and one and grid_points >= 5")
     threshold = float(chi2_distribution.ppf(probability, 1))
     lo, hi = bounds
     if not lo <= best.x <= hi:
@@ -178,13 +193,15 @@ def profile_intervals(function, best: Minimum, bounds, *, probability=.95, grid_
                 "lower_truncated": left == lo and delta(lo) < 0,
                 "upper_truncated": right == hi and delta(hi) < 0})
     return {"label": "nominal profile-objective support; coverage unvalidated",
-            "delta_threshold": threshold, "intervals": intervals}
+            "delta_threshold": threshold, "intervals": intervals,
+            "grid_points": grid_points, "root_xtol": 1e-10, "root_rtol": 1e-12}
 
 
-def minimum_2d(function, beta_bounds, alpha_bounds, *, grid_points=11):
+def minimum_2d(function, beta_bounds, alpha_bounds, *, grid_points=11, starts=5):
     """Coarse multistart + bounded Powell search in dimensionless (beta, alpha)."""
-    if grid_points < 3:
-        raise ValueError("grid_points must be >= 3")
+    if (not isinstance(grid_points, int) or grid_points < 3
+            or not isinstance(starts, int) or not 1 <= starts <= grid_points**2):
+        raise ValueError("grid_points must be >= 3 and starts in [1, grid_points**2]")
     for lo, hi in (beta_bounds, alpha_bounds):
         if not (math.isfinite(lo) and math.isfinite(hi) and 0 < lo < hi):
             raise ValueError("invalid positive 2D bounds")
@@ -196,7 +213,7 @@ def minimum_2d(function, beta_bounds, alpha_bounds, *, grid_points=11):
     candidates = [(objective((b, a)), (float(b), float(a)))
                   for b in np.linspace(*beta_bounds, grid_points)
                   for a in np.linspace(*alpha_bounds, grid_points)]
-    for _, point in sorted(candidates)[:5]:
+    for _, point in sorted(candidates)[:starts]:
         result = minimize(objective, point, method="Powell", bounds=(beta_bounds, alpha_bounds),
                           options={"xtol": 1e-7, "ftol": 1e-10, "maxiter": 1000})
         if not result.success:
@@ -206,4 +223,6 @@ def minimum_2d(function, beta_bounds, alpha_bounds, *, grid_points=11):
     boundary = any(min(abs(v-lo), abs(v-hi)) <= 1e-6*(hi-lo)
                    for v, (lo, hi) in zip((beta, alpha), (beta_bounds, alpha_bounds), strict=True))
     return {"beta": beta, "alpha": alpha, "cost": cost, "boundary": boundary,
-            "method": "bounded multistart search; not certified global optimum"}
+            "method": "bounded multistart search; not certified global optimum",
+            "grid_points_per_axis": grid_points, "refined_starts": starts,
+            "xtol": 1e-7, "ftol": 1e-10}

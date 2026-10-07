@@ -1,0 +1,17 @@
+{
+  "files": {
+    "data/rotation_curves.tsv": {
+      "sha256": "3eee9256cc97ee98feef9150ca4ea3450a26461b29d9c487be3b891708611d28",
+      "size": 209260
+    },
+    "data/rotation_curves_full.source.json": {
+      "sha256": "5de7e2679c671ed856d63574fb73bde361d8192729c64bf0cfbf1dbb7e706e17",
+      "size": 656
+    },
+    "data/rotation_curves_full.tsv": {
+      "sha256": "768b12d0480e4273fa8177bd6f6107b8710c69e5411a99da79ec9f75c014e8bb",
+      "size": 233182
+    }
+  },
+  "schema_version": 1
+}
