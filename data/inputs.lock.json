@@ -1,0 +1,9 @@
+{
+  "files": {
+    "data/rotation_curves.tsv": {
+      "sha256": "3eee9256cc97ee98feef9150ca4ea3450a26461b29d9c487be3b891708611d28",
+      "size": 209260
+    }
+  },
+  "schema_version": 1
+}

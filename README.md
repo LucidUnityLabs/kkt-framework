@@ -1,48 +1,84 @@
-# KKT Geodesic Framework
+# KKT framework: numerical diagnostics and reproducible analysis
 
-Code and data repository for:
+This repository implements conditional force-law diagnostics and research fits.
+Passing numerical checks does not validate a relativistic theory, cosmological
+interpretation, or observational likelihood. The verifier reports its exact scope
+and separately records claims that are not verified.
 
-**KKT Geodesic Framework: Kaluza-Klein Theory with a₀ = cH₀/(2π) — Theory and Observational Tests**  
-Tyler (2026)
+## Environment
 
+The reference target is CPython 3.13.5 on Linux x86-64. `requirements.in` records
+the audit-tested dependency versions. A maintainer must generate and review a
+platform-specific `requirements.lock` and retain the wheelhouse; no dependency
+hashes or container digests should be guessed.
 
-Disclaimer: Created with Opus 4.6 High, Validated with Codex 5.3 xHigh. Statistics corrected and re-verified with GLM 5.3, September 2026 (preprint v4).
+    python tools/lock_environment.py
+    python -m venv .venv
+    .venv/bin/python -m pip install --no-index --find-links vendor/wheels --only-binary=:all: --require-hashes -r requirements.lock
+    .venv/bin/python -m pip check
+    .venv/bin/python -m pytest -q
 
-Preprint: https://doi.org/10.5281/zenodo.18753081
+Lock creation is a one-time acquisition step, not a normal build operation.
+After installation, numerical builds need no network connection.
 
-## Contents
+## Numerical checks
 
-### scripts/
-| Script | Description |
-|--------|-------------|
-| `kk_verify_all.py` | Verifies all mathematical identities and numerical constants in the paper (56 checks) |
-| `sparc_tests_abc.py` | SPARC rotation curve fitting: KK vs MOND vs gauge field, shape/scale tests |
-| `kk_rar_morphology.py` | RAR residuals by surface brightness class (LSB/MED/HSB) |
-| `kk_solar_system.py` | Solar system constraints: Cassini, perihelion, LLR, binary pulsars |
-| `kk_z_dependence.py` | Redshift evolution of a₀(z) = cH(z)/(2π) and BTFR predictions |
-| `kk_z_btfr_data.py` | BTFR normalization vs redshift figure with observational data |
-| `kk_dimensional_reduction.py` | Dimensional reduction and Hole B closure |
-| `kk_dS_force_law.py` | De Sitter force law and beta-exponent analysis |
+    python -m kkt verify
+    python tools/build.py --suite numerics --out build/numerics
 
-### plots/
-The four figures appearing in the paper.
+The implemented reference verifier has 73 numerical checks and eight separately
+unverified claim groups. Any failed numerical check returns exit code 1. Requiring
+all claims with `--require-all-claims` returns code 2 while unverified claims remain.
+Do not describe a successful numerical-only invocation as full theory validation.
 
-### data/
-`rotation_curves.tsv` — SPARC database (Lelli et al. 2016, publicly available at http://astroweb.cwru.edu/SPARC/)
+## Data and fitting
 
-## Requirements
-```
-pip install numpy scipy matplotlib
-```
+The original TSV is a VizieR projection without the bulge velocity column.
+A complete mass-model run requires `Vbulge`; `--disk-only` is an explicit
+legacy-data diagnostic, not permission to publish incomplete baryonic fits as
+complete SPARC tests. See `data/SOURCES.md` and the audit for acquisition details.
 
-## Running the verification
-```bash
-python scripts/kk_verify_all.py
-```
-Expected output: 56 PASS, 3 warnings on conjectured quantities, 1 notation-level failure (binary pulsar order of magnitude).
+    python scripts/sparc_tests_abc.py --disk-only
+    python scripts/kk_rar_morphology.py --disk-only --plot
+    python scripts/kk_dS_force_law.py --disk-only
 
-## Key result
-At the same fixed a0 = cH0/(2pi), the KKT quadrature formula v(y) = sqrt(1 + 1/y) outperforms simple MOND on 58% of SPARC galaxies (101/175; total delta chi^2 = -2038). This preference is configuration-dependent: MOND with one free a0 fits better (delta chi^2 = -1780, implied H0 = 40.2 — unphysical), and a generalized composition exponent beta is preferred at 1.65 (95% CI 1.55-1.80), excluding both the KK and MOND-simple functional forms. See `sparc_tests_abc.py` (Tests A/B/C) and preprint v4.
+The default objective is velocity-space least squares using the supplied random
+velocity errors, with no additional floor. All models use the same observations.
+Distance, inclination, quality selection and correlated systematic uncertainties
+must be modeled before interpreting objective differences as calibrated evidence.
+The shared bulge/disk M/L ratio (default 1.4) is an explicit, changeable assumption.
+
+For a diagnostic closer to the original A/B/C configuration, use
+`--objective acceleration --floor 0.10 --min-points 3 --disk-only`.
+This does not reproduce the original bugs, and updated constants, physical
+parameter bounds and refined searches can change the published statistics.
+
+The generalized exponent beta=1 is KK quadrature. Beta=0.5 is the additive/gauge
+law, not simple MOND. The actual simple-MOND function is fitted separately.
+Profile support intervals are nominal objective contours, not calibrated coverage.
+No new 101/175 win rate, global best-fit acceleration or exclusion is asserted
+until the complete analysis has been rerun and its assumptions validated.
+
+## High-redshift analysis
+
+    python -m kkt btfr --btfr-data data/btfr_observations.json --plot
+
+This requires a curated observation product with original sources, explicitly
+validated asymptotic velocities, mass definitions and a full log-space covariance.
+It will not substitute a remembered, theory-scaled local anchor or treat Vmax and
+V2.2 as Vflat. Missing inputs return a nonzero BLOCKED result.
+
+## Outputs and reproducibility
+
+Commands write atomic JSON and optional figures beneath `build/results` or
+`--out`. Inputs and code carry hashes; imports do not perform analyses. Figure
+generators are replacements, not byte-for-byte reproductions of historical plots.
+Use `tools/lock_inputs.py` to record/verify data, and `tools/compare_builds.py` to
+compare same-environment runs. Hosted CI is a numerical check; archival binary
+reproducibility additionally requires a retained, digest-pinned container and
+wheels. The optional `tools/lock_container.py` generates real image-digest locks.
 
 ## License
-MIT
+
+Keep the repository's existing MIT code license. External catalogue provenance
+and redistribution terms remain separate from the code license.
